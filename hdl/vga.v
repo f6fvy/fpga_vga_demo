@@ -13,7 +13,7 @@ module vga(
 	input						clk,						// 25 MHz clock (40 ns) - Pixel clock
 	input		[2:0] 		pixel,					// RGB pixel to display
 	
-	output	reg			hsync, vsync,			// VGA sync outputs
+	output					hsync, vsync,			// VGA sync outputs
 	output					red, green, blue,		// VGA RGB data outputs
 	output	reg [9:0]	hpos, vpos,				// Current Pixel position
 	output					active,					// Active screen area flag (pixel within 640 x 480)
@@ -41,45 +41,33 @@ module vga(
 	VBP = VSYNC + 31;									// Vert. back porch end position
 
 	initial begin
-		hsync = 1'b1;
-		vsync = 1'b1;
 		hpos = 10'd0;
 		vpos = 10'd0;
 	end
 	
-	assign active = ((hpos <= HA) & (vpos <= VA));
-	assign tick = ((hpos == HPIXELS) & (vpos == VPIXELS));
-	
-	// Sync generation
+	// hpos and vpos loop
 	
 	always @ (posedge clk) begin
 		if (hpos >= HBP) begin
 			hpos <= 0;
-			hsync <= 1;
-			if (vpos >= VBP) begin
-				vpos <= 0;
-				vsync <= 1;
-			end
-			else begin
-				if (vpos >= VSYNC)
-					vsync <= 1;
-				else if (vpos >= VFP)
-					vsync <= 0;
-				else if (vpos >= VA)
-					vsync <= 1;
-				vpos <= vpos + 10'd1;
-			end
+			vpos <= vpos + 10'd1;
 		end
-		else begin
-			if (hpos >= HSYNC)
-				hsync <= 1;
-			else if (hpos >= HFP)
-				hsync <= 0;
-			else if (hpos >= HA)
-				hsync <= 1;
+		else
 			hpos <= hpos + 10'd1;
-		end
+			
+		if (vpos >= VBP)
+			vpos <= 0;
 	end
+	
+	// Active area and tick
+
+	assign active = ((hpos <= HA) & (vpos <= VA));
+	assign tick = ((hpos == HPIXELS) & (vpos == VPIXELS));
+
+	// Sync generation
+	
+	assign hsync = ~((hpos > HFP) & (hpos <= HSYNC));
+	assign vsync = ~((vpos > VFP) & (vpos <= VSYNC));
 	
 	// Pixel colors sent only in the active area
 	
