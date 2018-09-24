@@ -4,20 +4,24 @@
 // Sept 2018
 
 /*
-	Warning : This code uses a 25 MHz clock, which is slightly out of spec (25.125 MHz).
-	
+	Warning : This code uses a 50 MHz mater clock,
+	which generates a 25 MHz pixel clock,
+	slightly out of spec (25.125 MHz).
+
 	Modern monitors handle this difference, but YMMV.
 */
 
 module vga(
-	input						clk,						// 25 MHz clock (40 ns) - Pixel clock
-	input		[2:0] 		pixel,					// RGB pixel to display
-	
-	output					hsync, vsync,			// VGA sync outputs
-	output					red, green, blue,		// VGA RGB data outputs
-	output	reg [9:0]	hpos, vpos,				// Current Pixel position
-	output					active,					// Active screen area flag (pixel within 640 x 480)
-	output					tick						// Pulse when entering the blanking area
+	input						clk,										// 50 MHz / 20 ns
+	input						reset,
+	input	[2:0]				pixel_rgb,								// Current pixel RGB data to be displayed
+
+	output					hsync, vsync,							// VGA sync signals
+	output					red, green, blue,						// VGA RGB data
+	output					active,									// Active when pixel inside the 640 x 480 area
+	output					ptick,									// Pixel clock (25 MHz - all signals are stable on front edge)
+	output [9:0]			xpos, ypos,								// Current pixel position
+	output					ftick										// Frame clock (60 Hz - all signals are stable on front edge)
 );
 
 // VGA 640 x 480 parameters
@@ -40,39 +44,150 @@ module vga(
 	VSYNC = VFP + 2,									// Vert. sync end position
 	VBP = VSYNC + 31;									// Vert. back porch end position
 
-	initial begin
-		hpos = 10'd0;
-		vpos = 10'd0;
+	// Instead of creating a separate 25-MHz clock domain and violating
+	// the "synchronous design methodology", we generate a 25-MHz enable tick
+	// to enable or pause the counting.
+	
+	// The tick is also routed to the p_tick port as an output signal
+	// to coordinate operation of the pixel generation circuit.
+	
+	// Mod-2 counter
+
+	reg		mod2_r;
+	wire		mod2_next;
+	wire		ptick_w;
+	
+	// Sync counters
+
+	reg  [9:0]	hcount, hcount_next;
+	reg  [9:0]	vcount, vcount_next;
+	
+	// Sync output buffers
+	
+	// To remove potential glitches, output buffers are inserted for the hsync and vsync signals. This leads 
+	// to a one-clock-cycle delay. We also add a similar buffer for the rgb signal in the pixel 
+	// generation circuit to compensate for the delay.
+	
+	reg			vsync_r, hsync_r;
+	wire			vsync_next, hsync_next;
+	
+	// RGB signal buffer
+	
+	reg			red_r, green_r, blue_r;
+
+	// Frame output buffered
+	
+	reg			ftick_r;
+	wire			ftick_next;
+	
+	// Status signals
+
+	wire			h_end, v_end;
+
+	// Body
+	
+	// Registers
+
+always @ (posedge clk or posedge reset) begin
+	if  (reset) begin
+		mod2_r <= 1'b0;
+		
+		vcount <= 0;
+		hcount <= 0;
+		
+		vsync_r <= 1'b0;
+		hsync_r <= 1'b0;
+		
+		red_r <= 1'b0;
+		green_r <= 1'b0;
+		blue_r <= 1'b0;
+		
+		ftick_r <= 1'b0;
 	end
+	else begin
+		mod2_r <= mod2_next;
+		
+		vcount <= vcount_next;
+		hcount <= hcount_next;
+		
+		vsync_r <= vsync_next;
+		hsync_r <= hsync_next;
+		
+		red_r <= pixel_rgb[0];
+		green_r <= pixel_rgb[1];
+		blue_r <= pixel_rgb[2];
+		
+		ftick_r <= ftick_next;
+	end
+end
+
+	// Mod-2 circuit to generate the 25 MHz tick
 	
-	// hpos and vpos loop
-	
-	always @ (posedge clk) begin
-		if (hpos >= HBP) begin
-			hpos <= 0;
-			vpos <= vpos + 10'd1;
-		end
+	assign mod2_next = ~mod2_r;
+	assign ptick_w = mod2_r;
+
+	// Status  signals
+
+	// End of horizontal line counter (799)
+
+	assign h_end = (hcount == HBP);
+
+	// End of vertical (524)
+
+	assign v_end = (vcount == VBP);
+
+	// Next-state logic of mod-800 horizontal sync counter
+
+	always @(*) begin
+		if  (ptick_w)  // 25 MHz pixel tick
+			if (h_end)	// End of line ?
+				hcount_next = 0;
+			else
+				hcount_next = hcount + 10'd1;
 		else
-			hpos <= hpos + 10'd1;
-			
-		if (vpos >= VBP)
-			vpos <= 0;
+			hcount_next = hcount;
 	end
-	
-	// Active area and tick
 
-	assign active = ((hpos <= HA) & (vpos <= VA));
-	assign tick = ((hpos == HPIXELS) & (vpos == VPIXELS));
+	// Next-state logic of mod-525 vertical sync counter
 
-	// Sync generation
+	always @(*) begin
+		if (ptick_w & h_end)	// 25 MHz pixel tick and end of line
+			if (v_end)	// End of screen ?
+				vcount_next = 0;
+			else
+				vcount_next = vcount + 10'd1;
+		else
+			vcount_next = vcount;
+	end
+
+	// Horizontal and vertical sync, and f_tick, buffered to avoid glitches
 	
-	assign hsync = ~((hpos > HFP) & (hpos <= HSYNC));
-	assign vsync = ~((vpos > VFP) & (vpos <= VSYNC));
+	// hsync_next reset between 656 and 752
 	
-	// Pixel colors sent only in the active area
+	assign	hsync_next = ~((hcount > HFP) && (hcount <= HSYNC));
+
+	// vsync_next reset between 491 and 493
 	
-	assign red = active ? pixel[0] : 1'b0;
-	assign green = active ? pixel[1] : 1'b0;
-	assign blue = active ? pixel[2] : 1'b0;
+	assign	vsync_next = ~((vcount > VFP) && (vcount <= VSYNC));
 	
+	// f_tick_next set when the current position enters the blanking area
+	
+	assign	ftick_next = (hcount == HPIXELS) && (vcount == VPIXELS);
+
+	// active when the current position is inside the visible area
+	
+	assign	active = (hcount <= HA) && (vcount <= VA);
+
+	// Outputs
+
+	assign	hsync = hsync_r;
+	assign	vsync = vsync_r;
+	assign	xpos = hcount;
+	assign	ypos = vcount;
+	assign	ptick = ptick_w;
+	assign	ftick = ftick_r;
+
+	assign	red = active ? red_r : 1'b0;
+	assign	green = active ? green_r : 1'b0;
+	assign	blue = active ? blue_r : 1'b0;
 endmodule

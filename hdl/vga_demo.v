@@ -4,48 +4,53 @@
 // Sept 2018
 
 module vga_demo(
-	input			clk,						// 50 MHz / 20 ns
+	input			clk_50,					// 50 MHz / 20 ns
 
 	output		red, green, blue,		// VGA color outputs
 	output		hsync, vsync			// VGA sync outputs
 );
 
-	reg			clk_25;					// Clock 25 MHz
-
 	wire	[9:0]	hpos, vpos;				// Current pixel position
 	wire 			active;					// Active screen area flag
-	wire			tick;						// Pulse coming from the VGA generator when entering into the blanking area (60 Hz)
+	wire			pixel_tick;				// Pulse coming from the VGA generator when the pixel position is stable (25 MHz)
+	wire			frame_tick;				// Pulse coming from the VGA generator when entering into the blanking area (60 Hz)
 	
 	reg	[2:0]	pixel;					// Current pixel RGB color
 	reg	[6:0]	count;					// Counter for pattern
 	reg	[3:0]	pattern;					// Current pattern (0 - 15)
 
-	initial begin
-		clk_25 = 1'b0;
-		pixel = 3'b0;	// Black
-		count = 7'b0;
-		pattern = 4'b0;
-	end
+	// Reset pulse
+
+	reg		counter_reset = 1'b0;
+	reg		reset = 1'b0;
 
 	vga vga_gen(
-		.clk(clk_25),
-		.pixel(pixel),
+		.clk(clk_50),
+		.reset(reset),
+		.pixel_rgb(pixel),
 		
 		.hsync(hsync),
 		.vsync(vsync),
 		.red(red),
 		.green(green),
-		.blue(blue), 
-		.hpos(hpos),
-		.vpos(vpos),
+		.blue(blue),
 		.active(active),
-		.tick(tick)
-	);
-	
-	// 25 MHz clock generator
+		.ptick(pixel_tick),
+		.xpos(hpos),
+		.ypos(vpos),
 
-	always @ (posedge clk) begin
-		clk_25 <= ~clk_25;
+		.ftick(frame_tick)
+	);
+
+	// Generate a reset pulse
+
+	always @ (posedge clk_50) begin
+		if (~counter_reset) begin
+			counter_reset <= 1'b1;
+			reset <= 1'b1;
+		end
+		else
+			reset <= 0;
 	end
 
 	// Hello World!
@@ -89,19 +94,25 @@ module vga_demo(
 
 	// Pattern counter (pattern changes every second)
 	
-	always @(posedge tick) begin
-		if (count >= 60) begin
+	always @(posedge frame_tick or posedge reset) begin
+		if (reset) begin
 			count <= 7'd0;
-			pattern <= pattern + 4'b1;
+			pattern <= 4'd0;
 		end
 		else begin
-			count <= count + 7'b1;
+			if (count >= 7'd60) begin
+				count <= 7'd0;
+				pattern <= pattern + 4'd1;
+			end
+			else begin
+				count <= count + 7'd1;
+			end
 		end
 	end
 		
 	// Paint screen depending on the pattern
 
-	always @(posedge clk_25) begin
+	always @(posedge pixel_tick) begin
 		if (! active)
 			pixel <= 3'b0;
 		else begin
