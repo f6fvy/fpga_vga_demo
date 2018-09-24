@@ -10,7 +10,7 @@ module vga_demo_tb();
 	wire	hsync, vsync;
 
 	vga_demo dut(
-	.clk(clk),
+	.clk_50(clk),
 	
 	.red(red),
 	.green(green),
